@@ -1,0 +1,35 @@
+name: Integration Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Gateway base URL
+        required: true
+        default: https://sandbox-gateway.cloud.seaart.ai
+      template_id:
+        description: Runtime-enabled template ID or stable template type
+        required: true
+      project_id:
+        description: Optional gateway project routing key
+        required: false
+        default: ""
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      SANDBOX_RUN_INTEGRATION: "1"
+      SANDBOX_TEST_BASE_URL: ${{ inputs.base_url }}
+      SANDBOX_TEST_API_KEY: ${{ secrets.SANDBOX_TEST_API_KEY }}
+      SANDBOX_TEST_TEMPLATE_ID: ${{ inputs.template_id }}
+      SEACLOUD_PROJECT_ID: ${{ inputs.project_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Validate required secret
+        run: test -n "${SANDBOX_TEST_API_KEY}"
+      - run: go test ./tests/... -count=1 -v
