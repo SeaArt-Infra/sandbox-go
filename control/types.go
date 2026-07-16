@@ -22,6 +22,14 @@ type NewSandboxRequest struct {
 	EnvVars      map[string]string `json:"envVars,omitempty"`
 	VolumeMounts []VolumeMount     `json:"volumeMounts,omitempty"`
 	WaitReady    *bool             `json:"waitReady,omitempty"`
+	AutoPause    *bool             `json:"autoPause,omitempty"`
+	WaitTimeout  time.Duration     `json:"-"`
+	PollInterval time.Duration     `json:"-"`
+}
+
+// SandboxLifecycle describes the action applied when a running sandbox times out.
+type SandboxLifecycle struct {
+	OnTimeout string `json:"onTimeout"`
 }
 
 // Sandbox is returned by create and connect endpoints.
@@ -59,6 +67,7 @@ type SandboxDetail struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 	Status          string            `json:"status"`
 	State           string            `json:"state,omitempty"`
+	Lifecycle       SandboxLifecycle  `json:"lifecycle"`
 	VolumeMounts    []VolumeMount     `json:"volumeMounts,omitempty"`
 	Namespace       string            `json:"namespace,omitempty"`
 	ActivatedAt     *time.Time        `json:"activatedAt,omitempty"`

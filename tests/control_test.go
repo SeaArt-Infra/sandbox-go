@@ -176,9 +176,10 @@ func TestRootListSandboxesReturnsBoundHandles(t *testing.T) {
 				"clientID":"user-1",
 				"envdVersion":"atlas-0.1.0",
 				"envdAccessToken":"unit-runtime-auth",
-				"envdUrl":"https://sandbox-gateway.cloud.seaart.ai",
-				"status":"running",
-				"startedAt":"2024-01-01T00:00:00Z",
+					"envdUrl":"https://sandbox-gateway.cloud.seaart.ai",
+					"status":"running",
+					"lifecycle":{"onTimeout":"pause"},
+					"startedAt":"2024-01-01T00:00:00Z",
 				"endAt":"2024-01-01T01:00:00Z"
 			}`))
 		}
@@ -204,6 +205,9 @@ func TestRootListSandboxesReturnsBoundHandles(t *testing.T) {
 	}
 	if _, err := detail.Runtime(); err != nil {
 		t.Fatalf("Runtime: %v", err)
+	}
+	if detail.Lifecycle.OnTimeout != "pause" {
+		t.Fatalf("Lifecycle = %#v", detail.Lifecycle)
 	}
 	if _, err := listed[0].Logs(context.Background(), nil); err != nil {
 		t.Fatalf("Logs: %v", err)
@@ -376,6 +380,29 @@ func TestAPIErrorDecodingStringDetail(t *testing.T) {
 	}
 	if err.Error() != "not found" {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestDeleteSandboxIsIdempotentForDeletedResources(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/sandboxes/sb-deleted" {
+					t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"sandbox has been deleted"}`))
+			}))
+			defer server.Close()
+
+			service, err := control.NewService(server.URL, "unit-auth-value")
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			if err := service.DeleteSandbox(context.Background(), "sb-deleted"); err != nil {
+				t.Fatalf("DeleteSandbox status %d: %v", status, err)
+			}
+		})
 	}
 }
 

@@ -120,7 +120,7 @@ func classifyAPIError(statusCode int) APIErrorKind {
 		return APIErrorKindAuthentication
 	case http.StatusForbidden:
 		return APIErrorKindPermission
-	case http.StatusNotFound:
+	case http.StatusNotFound, http.StatusGone:
 		return APIErrorKindNotFound
 	case http.StatusRequestTimeout:
 		return APIErrorKindTimeout

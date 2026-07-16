@@ -2,7 +2,10 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SeaArt-Infra/sandbox-go/cmd"
 	"github.com/SeaArt-Infra/sandbox-go/control"
@@ -32,11 +35,92 @@ type ConnectSandboxResponse struct {
 }
 
 func (c *Client) CreateSandbox(ctx context.Context, req *control.NewSandboxRequest) (*Sandbox, error) {
-	sandbox, err := c.Service.CreateSandbox(ctx, req)
+	if req == nil {
+		return nil, core.ErrTemplateEmpty
+	}
+	waitReady := req.WaitReady != nil && *req.WaitReady
+	request := *req
+	if waitReady {
+		wait := false
+		request.WaitReady = &wait
+	}
+	created, err := c.Service.CreateSandbox(ctx, &request)
 	if err != nil {
 		return nil, err
 	}
-	return bindSandbox(c, sandbox), nil
+	sandbox := bindSandbox(c, created)
+	if !waitReady || sandboxControlReady(created.Status, created.State) {
+		return sandbox, nil
+	}
+	waitTimeout := req.WaitTimeout
+	if waitTimeout <= 0 {
+		waitTimeout = 3 * time.Minute
+	}
+	pollInterval := req.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = 500 * time.Millisecond
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+	for {
+		detail, getErr := c.Service.GetSandbox(waitCtx, created.SandboxID)
+		if getErr == nil && detail != nil {
+			updateCreatedSandbox(created, detail)
+			if sandboxControlReady(detail.Status, detail.State) {
+				return bindSandbox(c, created), nil
+			}
+			if sandboxControlTerminalFailure(detail.Status, detail.State) {
+				return bindSandbox(c, created), &ResourceOperationError{
+					Operation: "wait for sandbox readiness", ResourceType: "sandbox", ResourceID: created.SandboxID,
+					Err: fmt.Errorf("sandbox entered terminal state %q", firstNonEmpty(detail.State, detail.Status)),
+				}
+			}
+		} else if getErr != nil {
+			var apiErr *core.APIError
+			if !errors.As(getErr, &apiErr) || (apiErr.Kind != core.APIErrorKindNotFound && !apiErr.Retryable()) {
+				return sandbox, &ResourceOperationError{Operation: "wait for sandbox readiness", ResourceType: "sandbox", ResourceID: created.SandboxID, Err: getErr}
+			}
+		}
+		if pollErr := waitForPoll(waitCtx, pollInterval); pollErr != nil {
+			return bindSandbox(c, created), &ResourceOperationError{Operation: "wait for sandbox readiness", ResourceType: "sandbox", ResourceID: created.SandboxID, Err: pollErr}
+		}
+	}
+}
+
+func sandboxControlReady(status, state string) bool {
+	switch strings.ToLower(strings.TrimSpace(firstNonEmpty(state, status))) {
+	case "active", "running", "ready":
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxControlTerminalFailure(status, state string) bool {
+	switch strings.ToLower(strings.TrimSpace(firstNonEmpty(state, status))) {
+	case "deleted", "destroying", "failed", "error", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func updateCreatedSandbox(created *control.Sandbox, detail *control.SandboxDetail) {
+	if created == nil || detail == nil {
+		return
+	}
+	created.TemplateID = detail.TemplateID
+	created.SandboxID = detail.SandboxID
+	created.ClientID = detail.ClientID
+	created.EnvdVersion = detail.EnvdVersion
+	created.EnvdAccessToken = detail.EnvdAccessToken
+	created.EnvdURL = detail.EnvdURL
+	created.Namespace = detail.Namespace
+	created.Status = detail.Status
+	created.State = detail.State
+	created.StartedAt = detail.StartedAt
+	created.ActivatedAt = detail.ActivatedAt
+	created.EndAt = detail.EndAt
 }
 
 func (c *Client) GetSandbox(ctx context.Context, sandboxID string) (*SandboxDetail, error) {

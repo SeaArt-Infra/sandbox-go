@@ -132,13 +132,8 @@ func TestIntegrationBuildPlane(t *testing.T) {
 			t.Fatal("template detail builds is empty")
 		}
 
-		updated, err := service.UpdateTemplate(ctx, templateID, &build.TemplateUpdateRequest{
-			Extensions: &build.PublicTemplateExtensions{
-				Seacloud: &build.PublicSeacloudTemplateExtensions{
-					Envs: map[string]string{"SDK_TEST": "1"},
-				},
-			},
-		})
+		public := false
+		updated, err := service.UpdateTemplate(ctx, templateID, &build.TemplateUpdateRequest{Public: &public})
 		if err != nil {
 			t.Fatalf("UpdateTemplate: %v", err)
 		}

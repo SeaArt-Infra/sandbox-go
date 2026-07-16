@@ -151,7 +151,20 @@ func (c *Service) DeleteTemplate(ctx context.Context, templateID string) error {
 	}
 
 	path := "/api/v1/templates/" + url.PathEscape(templateID)
-	_, err := c.DoRequest(ctx, http.MethodDelete, path, nil, nil, nil, http.StatusNoContent)
+	resp, err := c.DoRequest(
+		ctx,
+		http.MethodDelete,
+		path,
+		nil,
+		nil,
+		nil,
+		http.StatusNoContent,
+		http.StatusNotFound,
+		http.StatusGone,
+	)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	return err
 }
 
@@ -387,19 +400,19 @@ func validateTemplateCreateRequest(req *TemplateCreateRequest) error {
 }
 
 func validateTemplateUpdateRequest(req *TemplateUpdateRequest) error {
-	if req == nil {
-		return nil
-	}
-	return validatePublicTemplateExtensions(req.Extensions)
+	return nil
 }
 
 func validatePublicTemplateExtensions(ext *PublicTemplateExtensions) error {
-	if ext == nil || ext.Seacloud == nil {
+	if ext == nil {
 		return nil
 	}
-	seacloud := ext.Seacloud
-	if strings.TrimSpace(seacloud.Visibility) == "official" {
-		return fmt.Errorf("sandbox: extensions.seacloud.visibility=official is not supported by the public SDK")
+	visibility := strings.ToLower(strings.TrimSpace(ext.Visibility))
+	if visibility == "official" {
+		return fmt.Errorf("sandbox: extensions.visibility=official is not supported by the public SDK")
+	}
+	if visibility != "" && visibility != "personal" && visibility != "team" {
+		return fmt.Errorf("sandbox: extensions.visibility must be personal or team")
 	}
 	return nil
 }
@@ -413,13 +426,6 @@ func validateBuildRequest(req *BuildRequest) error {
 			return err
 		}
 	}
-	hash := strings.TrimSpace(req.FilesHash)
-	if hash != "" {
-		if !sha256Pattern.MatchString(hash) {
-			return fmt.Errorf("sandbox: filesHash must be a 64-character lowercase hex SHA256")
-		}
-	}
-
 	for i, step := range req.Steps {
 		stepType := strings.ToUpper(strings.TrimSpace(step.Type))
 		switch stepType {
@@ -524,7 +530,6 @@ func isZeroBuildRequest(req *BuildRequest) bool {
 		req.FromImageRegistry == nil &&
 		req.Force == nil &&
 		len(req.Steps) == 0 &&
-		strings.TrimSpace(req.FilesHash) == "" &&
 		strings.TrimSpace(req.StartCmd) == "" &&
 		strings.TrimSpace(req.ReadyCmd) == ""
 }

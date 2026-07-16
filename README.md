@@ -19,7 +19,7 @@ Preferred public API:
 - low-level build plane via `client.Build`
 - raw runtime helper: `createdSandbox.Runtime()` or `client.RuntimeFromSandbox(createdSandbox)`
 
-`control` and `build` both talk to the same gateway. Runtime access is derived from sandbox create/detail/connect responses; callers should not hardcode runtime endpoints or tokens. Project-scoped deployments can inject gateway routing context with `core.WithProjectID(...)`.
+`control` and `build` both talk to the same gateway. Runtime access is derived from sandbox create/detail/connect responses; callers should not hardcode runtime endpoints or tokens. On the public production gateway, tenant and project identity are derived from the authenticated production key; caller-supplied project headers do not select another tenant.
 
 ## E2B Alignment
 
@@ -34,22 +34,20 @@ Use environment variables for gateway configuration in all examples and quick st
 
 - `SEAINFRA_BASE_URL`: SeaInfra gateway entrypoint
 - `SEAINFRA_API_KEY`: API key used for gateway routing and authentication
-- `SEAINFRA_PROJECT_ID`: optional project routing key for project-scoped gateways
 - `SEAINFRA_TEMPLATE_ID`: sandbox template identifier or official template type for your target environment
 
 Set them once in your shell:
 
 ```bash
-export SEAINFRA_BASE_URL="https://sandbox-gateway.cloud.seaart.ai"
+export SEAINFRA_BASE_URL="https://openresty-gateway.api.seaart.ai/agent-v2"
 export SEAINFRA_API_KEY="..."
-export SEAINFRA_PROJECT_ID="project-..."
 export SEAINFRA_TEMPLATE_ID="tpl-..."
 ```
 
 Default production gateway:
 
 ```text
-https://sandbox-gateway.cloud.seaart.ai
+https://openresty-gateway.api.seaart.ai/agent-v2
 ```
 
 Use `SEAINFRA_TEMPLATE_ID` for production integrations. It can be either a concrete template ID such as `tpl-...` or a stable official template type such as `base`, `claude`, or `codex` when your environment publishes those official templates.
@@ -91,7 +89,6 @@ func main() {
 	client, err := sandbox.NewClient(
 		os.Getenv("SEAINFRA_BASE_URL"),
 		os.Getenv("SEAINFRA_API_KEY"),
-		core.WithProjectID(os.Getenv("SEAINFRA_PROJECT_ID")),
 		core.WithTimeout(180*time.Second),
 	)
 	if err != nil {
@@ -169,7 +166,7 @@ High-level template helpers currently include:
 - serialization: `sandbox.TemplateToJSON`, `sandbox.TemplateToDockerfile`
 - base images and registries: `FromDockerfile`, `FromBaseImage`, `FromNodeImage`, `FromPythonImage`, `FromBunImage`, `FromUbuntuImage`, `FromDebianImage`, `FromAWSRegistry`, `FromGCPRegistry`
 - build-step helpers: `Copy`, `CopyItems`, `SkipCache`, `AptInstall`, `GitClone`, `MakeDir`, `MakeSymlink`, `NpmInstall`, `PipInstall`, `BunInstall`, `Remove`, `Rename`, `RunCmd`, `RunCmds`
-- execution and config helpers: `SetEnvs`, `SetWorkdir`, `SetUser`, `SetStartCmd`, `SetReadyCmd`, `FilesHash`
+- execution and config helpers: `SetEnvs`, `SetWorkdir`, `SetUser`, `SetStartCmd`, `SetReadyCmd`
 - supported local copy options: `ForceUpload`, `Mode`, `ResolveSymlinks`
 - supported command and path options: `RunCmd(..., &sandbox.TemplateCommandOptions{User: ...})`, `GitClone(..., &sandbox.TemplateGitCloneOptions{User: ...})`, `MakeDir(..., &sandbox.TemplateMakeDirOptions{User: ...})`, `MakeSymlink(..., &sandbox.TemplateMakeSymlinkOptions{User: ...})`, `Remove(..., &sandbox.TemplateRemoveOptions{...User: ...})`, `Rename(..., &sandbox.TemplateRenameOptions{...User: ...})`
 - intentionally not exposed yet: `Copy(..., user=...)`, MCP server helpers, and devcontainer helpers
@@ -320,7 +317,7 @@ Low-level direct methods like `DeleteSandbox` and `GetSandboxLogs` remain availa
 
 The root client also includes operator-oriented methods such as `GetPoolStatus`, `StartRollingUpdate`, `GetRollingUpdateStatus`, and `CancelRollingUpdate`.
 
-These routes are intended for platform operators, not normal application workloads. Keep them out of business-facing integrations unless you are explicitly building operational tooling.
+These routes are intended for trusted internal deployments connected directly to an operator endpoint. The public production-key gateway does not expose them. A production key cannot use them and cannot access Admin, namespace, metrics, shutdown, heartbeat, or quota-override routes.
 
 ### Template Facade
 
@@ -336,33 +333,27 @@ Template builder conveniences include:
 
 - base images and registries: `FromDockerfile` (returns `(*Template, error)`), `FromBaseImage`, `FromNodeImage`, `FromPythonImage`, `FromBunImage`, `FromUbuntuImage`, `FromDebianImage`, `FromAWSRegistry`, `FromGCPRegistry`
 - file and command helpers: `Copy`, `CopyItems`, `SkipCache`, `AptInstall`, `GitClone`, `MakeDir`, `MakeSymlink`, `NpmInstall`, `PipInstall`, `BunInstall`, `Remove`, `Rename`, `RunCmd`, `RunCmds`
-- execution and config helpers: `SetEnvs`, `SetWorkdir`, `SetUser`, `SetStartCmd`, `SetReadyCmd`, `FilesHash`
+- execution and config helpers: `SetEnvs`, `SetWorkdir`, `SetUser`, `SetStartCmd`, `SetReadyCmd`
 - supported local copy options: `ForceUpload`, `Mode`, `ResolveSymlinks`
 - supported command and path options: `RunCmd(..., &sandbox.TemplateCommandOptions{User: ...})`, `GitClone(..., &sandbox.TemplateGitCloneOptions{User: ...})`, `MakeDir(..., &sandbox.TemplateMakeDirOptions{User: ...})`, `MakeSymlink(..., &sandbox.TemplateMakeSymlinkOptions{User: ...})`, `Remove(..., &sandbox.TemplateRemoveOptions{...User: ...})`, `Rename(..., &sandbox.TemplateRenameOptions{...User: ...})`
 - intentionally not exposed yet: `Copy(..., user=...)`, MCP server helpers, and devcontainer helpers
 
 ### Build Plane Through `client.Build`
 
-Low-level `client.Build` exposes:
+Low-level `client.Build` contains:
 
-- system: `Metrics`
-- direct build: `DirectBuild`
+- internal/operator-only helpers: `Metrics`, `DirectBuild` (not exposed by the public production-key gateway)
 - templates: `CreateTemplate`, `ListTemplates`, `GetTemplateByAlias`, `ResolveTemplateRef`, `GetTemplate`, `UpdateTemplate`, `DeleteTemplate`
 - builds: `CreateBuild`, `GetBuildFile`, `RollbackTemplate`, `ListBuilds`, `GetBuild`, `GetBuildStatus`, `GetBuildLogs`
 
-The public template contract is split into three layers: top-level create fields (`Name`, `Tags`, `CPUCount`, `MemoryMB`), SeaInfra template extensions under the protocol-compatible `Extensions.Seacloud` field (`BaseTemplateID`, `Visibility`, `Envs`, `StorageType`, `StorageSizeGB`), and build-only fields on `CreateBuild` (`FromImage`, `FromTemplate`, `Steps`, `StartCmd`, `ReadyCmd`, registry credentials, `FilesHash`).
-Public create/update calls reject legacy top-level write fields such as `Alias`, `TeamID`, and `Public`.
+The public template contract is split into three layers: top-level create fields (`Name`, `Tags`, `CPUCount`, `MemoryMB`), flat SeaInfra template extensions (`BaseTemplateID`, `Visibility`, `Envs`, `VolumeMounts`, `Workdir`), and build-only fields on `CreateBuild` (`FromImage`, `FromTemplate`, `Steps`, `StartCmd`, `ReadyCmd`, and registry credentials). COPY content hashes belong to each COPY step as `BuildStep.FilesHash`; the public Builder does not accept a top-level `filesHash`.
+Public create calls reject legacy top-level write fields such as `Alias` and `TeamID`. Public update only changes the `Public` visibility flag.
 
-For Go callers, the public write path and template read path now use different extension models on purpose:
+For Go callers, `TemplateCreateRequest` uses `PublicTemplateExtensions` and `TemplateUpdateRequest` only changes `Public`. Public read responses follow the Builder's E2B-facing list/detail shapes; Admin template metadata is not available through this route.
 
-- `TemplateCreateRequest` / `TemplateUpdateRequest` use `PublicTemplateExtensions`
-- `ListedTemplate` / `TemplateResponse` keep the fuller `TemplateExtensions` shape returned by the service
+`CreateTemplate` rejects `Extensions.Visibility == "official"` on public routes.
 
-This matches the current public builder API contract: request fields are intentionally narrower than response fields.
-
-`CreateTemplate` and `UpdateTemplate` reject `visibility=official` on public routes, including `Extensions.Seacloud.Visibility == "official"`.
-
-`CreateBuild` now follows the wire contract directly: callers pass top-level `FilesHash` when needed, and the SDK returns the raw `202 {}` trigger response without adding helper fields.
+`CreateBuild` follows the wire contract directly and returns the raw `202 {}` trigger response without adding helper fields. Local files are packed and uploaded by `Template.Copy`/`BuildTemplate`, which places the resulting hash on the COPY step.
 
 `GetTemplateByAlias` is a pure alias lookup endpoint. It should only be used with an actual published alias value.
 
@@ -404,11 +395,12 @@ Streaming APIs return `ProcessStream`, `FilesystemWatchStream`, and `ConnectFram
 ## Notes
 
 - The gateway entrypoint always needs `baseURL + apiKey` to initialize.
-- Project-scoped deployments can set `core.WithProjectID(...)`; the SDK sends `X-Project-ID` on control/build requests.
+- `core.WithProjectID(...)` is retained for direct/private Hermes deployments. The public Agent Gateway ignores caller-supplied project identity and derives the canonical project from the authenticated production-line key.
 - Runtime access should be derived from sandbox response objects with `Runtime()` or `RuntimeFromSandbox(...)`.
 - `CreateSandbox` and `GetSandbox` responses include `EnvdURL` and `EnvdAccessToken` when the target sandbox supports CMD access.
 - Runtime file/process APIs require a template image that starts nano-executor and returns runtime access fields; if runtime APIs return `404`, verify the selected template supports CMD runtime routes.
-- `waitReady=true` can take longer than the default HTTP timeout in production; pass `core.WithTimeout(...)` when creating long-wait clients.
+- High-level `Create` converts `waitReady=true` into a short create followed by cancellable client polling, so the sandbox ID is available even when readiness times out. Configure `WaitTimeout` and `PollInterval` when needed.
+- `CreateOptions.AutoPause` maps to the public `autoPause` lifecycle flag. The default is disposable (`lifecycle.onTimeout=kill`); set it to `true` only when a stopped sandbox should retain held capacity.
 - API errors expose `Kind` and `Retryable()` for retry logic and alert routing.
 - High-level `Kill()` helpers send `SIGNAL_SIGKILL` and return `false` when the runtime reports a missing process through either `404` or `ESRCH`.
 - PTY handles normalize reconnect output into `PTY` even when the runtime emits the bytes through `Stdout` / `Stderr`.
@@ -422,22 +414,7 @@ Streaming APIs return `ProcessStream`, `FilesystemWatchStream`, and `ConnectFram
 - Do not commit `SEAINFRA_API_KEY`, `envdAccessToken`, or sandbox access tokens.
 - Treat runtime tokens as sandbox-scoped secrets. Prefer `createdSandbox.Runtime()` or `client.RuntimeFromSandbox(...)` so response-scoped runtime access is not copied into configuration.
 - Do not log raw API keys or runtime tokens. SDK errors may include response bodies, so avoid logging full error payloads in shared systems.
-- Set `core.WithProjectID(...)` when your gateway requires explicit project routing. The SDK sends it as `X-Project-ID`.
-
-## Production Smoke
-
-Use production smoke tests only with explicitly provided credentials and disposable sandboxes:
-
-```bash
-SANDBOX_RUN_INTEGRATION=1 \
-SANDBOX_TEST_BASE_URL="${SEAINFRA_BASE_URL}" \
-SANDBOX_TEST_API_KEY="${SEAINFRA_API_KEY}" \
-SANDBOX_TEST_TEMPLATE_ID=tpl-base-dc11799b9f9f4f9e \
-go test ./tests/... -run Integration -count=1 -v
-```
-
-`tpl-base-dc11799b9f9f4f9e` is a known-good SeaInfra runtime template for validating CMD routes such as `ListDir`, `ReadFile`, `WriteFile`, and `Run`.
-You can also run the same disposable smoke flow from GitHub Actions with `.github/workflows/integration-smoke.yml` after setting the `SANDBOX_TEST_API_KEY` repository secret.
+- Do not rely on `core.WithProjectID(...)` for public tenant selection. Agent Gateway overwrites it with the project derived from the authenticated production-line key.
 
 ## Integration Tests
 

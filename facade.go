@@ -45,6 +45,9 @@ type CreateOptions struct {
 	EnvVars      map[string]string
 	VolumeMounts []control.VolumeMount
 	WaitReady    *bool
+	AutoPause    *bool
+	WaitTimeout  time.Duration
+	PollInterval time.Duration
 }
 
 type ConnectOptions struct {
@@ -632,9 +635,14 @@ type TemplateBuildOptions struct {
 	GatewayConfig
 	Tags           []string
 	BaseTemplateID string
+	Visibility     string
+	Envs           map[string]string
+	VolumeMounts   []build.TemplateVolumeMount
+	Workdir        string
 	CPUCount       *int32
 	MemoryMB       *int32
 	Wait           *bool
+	WaitTimeout    time.Duration
 	PollInterval   time.Duration
 	OnBuildLog     func(LogEntry)
 }
@@ -1058,13 +1066,16 @@ func buildTemplateWithService(
 		return nil, err
 	}
 	tags := dedupeStrings(append(parsedTags, opts.Tags...))
-	var extensions *build.PublicTemplateExtensions
-	if strings.TrimSpace(opts.BaseTemplateID) != "" {
-		extensions = &build.PublicTemplateExtensions{
-			Seacloud: &build.PublicSeacloudTemplateExtensions{
-				BaseTemplateID: strings.TrimSpace(opts.BaseTemplateID),
-			},
-		}
+	visibility := strings.ToLower(strings.TrimSpace(opts.Visibility))
+	if visibility == "" {
+		visibility = "personal"
+	}
+	extensions := &build.PublicTemplateExtensions{
+		BaseTemplateID: strings.TrimSpace(opts.BaseTemplateID),
+		Visibility:     visibility,
+		Envs:           cloneStringMap(opts.Envs),
+		VolumeMounts:   append([]build.TemplateVolumeMount(nil), opts.VolumeMounts...),
+		Workdir:        strings.TrimSpace(opts.Workdir),
 	}
 	created, err := buildService.CreateTemplate(ctx, &build.TemplateCreateRequest{
 		Name:       templateName,
@@ -1076,17 +1087,29 @@ func buildTemplateWithService(
 	if err != nil {
 		return nil, err
 	}
+	partial := &TemplateBuildInfo{TemplateID: created.TemplateID, Name: templateName, Tags: tags, Status: "created"}
 	buildID := "build-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 16)
+	partial.BuildID = buildID
 	if opts.OnBuildLog != nil {
 		opts.OnBuildLog(LogEntry{Timestamp: time.Now().UTC(), Level: "info", Message: "Starting build " + buildID})
 	}
 	request, err := resolveTemplateRequest(ctx, template.builder.Request(), template.autoCopies, created.TemplateID, buildService)
 	if err != nil {
-		return nil, err
+		return partial, cleanupUnacceptedTemplate(created.TemplateID, buildService, err)
 	}
 	if _, err := buildService.CreateBuild(ctx, created.TemplateID, buildID, request); err != nil {
-		return nil, err
+		if buildStartDefinitelyRejected(err) {
+			return partial, cleanupUnacceptedTemplate(created.TemplateID, buildService, err)
+		}
+		return partial, &ResourceOperationError{
+			Operation:    "start template build",
+			ResourceType: "template",
+			ResourceID:   created.TemplateID,
+			RelatedID:    buildID,
+			Err:          err,
+		}
 	}
+	partial.Status = "building"
 	wait := true
 	if opts.Wait != nil {
 		wait = *opts.Wait
@@ -1094,7 +1117,7 @@ func buildTemplateWithService(
 	if !wait {
 		templateResp, err := buildService.GetTemplate(ctx, created.TemplateID, nil)
 		if err != nil {
-			return nil, err
+			return partial, &ResourceOperationError{Operation: "get accepted template", ResourceType: "template", ResourceID: created.TemplateID, RelatedID: buildID, Err: err}
 		}
 		return &TemplateBuildInfo{
 			TemplateID: created.TemplateID,
@@ -1110,15 +1133,21 @@ func buildTemplateWithService(
 	if pollInterval <= 0 {
 		pollInterval = time.Second
 	}
+	waitTimeout := opts.WaitTimeout
+	if waitTimeout <= 0 {
+		waitTimeout = 30 * time.Minute
+	}
+	waitCtx, cancelWait := context.WithTimeout(ctx, waitTimeout)
+	defer cancelWait()
 	logsOffset := 0
 	var status *build.BuildStatusResponse
 	for {
-		status, err = buildService.GetBuildStatus(ctx, created.TemplateID, buildID, &build.BuildStatusParams{
+		status, err = buildService.GetBuildStatus(waitCtx, created.TemplateID, buildID, &build.BuildStatusParams{
 			LogsOffset: &logsOffset,
 			Limit:      intPtr(100),
 		})
 		if err != nil {
-			return nil, err
+			return partial, &ResourceOperationError{Operation: "wait for accepted build", ResourceType: "template", ResourceID: created.TemplateID, RelatedID: buildID, Err: err}
 		}
 		logsOffset += len(status.LogEntries)
 		if opts.OnBuildLog != nil {
@@ -1133,20 +1162,25 @@ func buildTemplateWithService(
 		if isTerminalBuildStatus(status.Status) {
 			break
 		}
-		time.Sleep(pollInterval)
+		if err := waitForPoll(waitCtx, pollInterval); err != nil {
+			return partial, &ResourceOperationError{Operation: "wait for accepted build", ResourceType: "template", ResourceID: created.TemplateID, RelatedID: buildID, Err: err}
+		}
 	}
 	if opts.OnBuildLog != nil {
 		opts.OnBuildLog(LogEntry{Timestamp: time.Now().UTC(), Level: "info", Message: "Build " + buildID + " finished with status " + status.Status})
 	}
+	partial.Status = status.Status
 	templateResp, err := buildService.GetTemplate(ctx, created.TemplateID, nil)
 	if err != nil {
-		return nil, err
+		return partial, &ResourceOperationError{Operation: "get completed template", ResourceType: "template", ResourceID: created.TemplateID, RelatedID: buildID, Err: err}
 	}
+	partial.Template = templateResp
 	buildResp, err := buildService.GetBuild(ctx, created.TemplateID, buildID)
 	if err != nil {
-		return nil, err
+		return partial, &ResourceOperationError{Operation: "get completed build", ResourceType: "template", ResourceID: created.TemplateID, RelatedID: buildID, Err: err}
 	}
-	return &TemplateBuildInfo{
+	partial.Build = buildResp
+	result := &TemplateBuildInfo{
 		TemplateID: created.TemplateID,
 		BuildID:    buildID,
 		Name:       templateName,
@@ -1154,7 +1188,66 @@ func buildTemplateWithService(
 		Status:     status.Status,
 		Template:   templateResp,
 		Build:      buildResp,
-	}, nil
+	}
+	if !isSuccessfulBuildStatus(status.Status) {
+		reason := buildFailureReason(status.Reason, buildResp.ErrorMessage)
+		cause := fmt.Errorf("build entered terminal status %q", status.Status)
+		if reason != "" {
+			cause = fmt.Errorf("%w: %s", cause, reason)
+		}
+		return result, &ResourceOperationError{
+			Operation:    "build template",
+			ResourceType: "template",
+			ResourceID:   created.TemplateID,
+			RelatedID:    buildID,
+			Err:          cause,
+		}
+	}
+	return result, nil
+}
+
+func cleanupUnacceptedTemplate(templateID string, buildService *build.Service, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cleanupErr := buildService.DeleteTemplate(cleanupCtx, templateID)
+	return &ResourceOperationError{
+		Operation:        "start template build",
+		ResourceType:     "template",
+		ResourceID:       templateID,
+		CleanupAttempted: true,
+		CleanupErr:       cleanupErr,
+		Err:              cause,
+	}
+}
+
+func buildStartDefinitelyRejected(err error) bool {
+	var apiErr *core.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.StatusCode {
+	case http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForPoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func listTemplatesWithService(
@@ -1297,6 +1390,11 @@ func WaitForProcess(processName string) ReadyCmd {
 	return ReadyCmd{cmd: "pgrep -f " + shellQuote(processName) + " >/dev/null"}
 }
 
+// WaitForCommand uses a caller-provided command as the template readiness probe.
+func WaitForCommand(command string) ReadyCmd {
+	return ReadyCmd{cmd: strings.TrimSpace(command)}
+}
+
 func WaitForTimeout(timeout time.Duration) ReadyCmd {
 	seconds := int(timeout.Seconds())
 	if seconds <= 0 {
@@ -1377,6 +1475,25 @@ func isTerminalBuildStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func isSuccessfulBuildStatus(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "ready")
+}
+
+func buildFailureReason(statusReason any, buildError string) string {
+	if reason := strings.TrimSpace(buildError); reason != "" {
+		return reason
+	}
+	switch reason := statusReason.(type) {
+	case string:
+		return strings.TrimSpace(reason)
+	case map[string]any:
+		if message, ok := reason["message"].(string); ok {
+			return strings.TrimSpace(message)
+		}
+	}
+	return ""
 }
 
 func normalizeLogLevel(level string) string {

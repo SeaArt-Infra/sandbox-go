@@ -133,6 +133,37 @@ func TestCreateTemplateUsesGatewayAuthOnly(t *testing.T) {
 	}
 }
 
+func TestUpdateTemplateSendsOnlyPublicVisibilityFlag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/templates/tpl-1" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(body) != 1 || body["public"] != true {
+			t.Fatalf("request body = %#v, want only public=true", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"names":["user-1/demo"]}`))
+	}))
+	defer server.Close()
+
+	service, err := build.NewService(server.URL, "unit-auth-value")
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	public := true
+	resp, err := service.UpdateTemplate(context.Background(), "tpl-1", &build.TemplateUpdateRequest{Public: &public})
+	if err != nil {
+		t.Fatalf("UpdateTemplate: %v", err)
+	}
+	if len(resp.Names) != 1 || resp.Names[0] != "user-1/demo" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestGetTemplateDecodesFullResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("nextToken") != "build-1" {
@@ -278,24 +309,11 @@ func TestTemplateValidationRejectsUnsupportedPublicExtensions(t *testing.T) {
 	_, err = service.CreateTemplate(context.Background(), &build.TemplateCreateRequest{
 		Name: "demo",
 		Extensions: &build.PublicTemplateExtensions{
-			Seacloud: &build.PublicSeacloudTemplateExtensions{
-				Visibility: "official",
-			},
+			Visibility: "official",
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "extensions.seacloud.visibility=official is not supported by the public SDK") {
+	if err == nil || !strings.Contains(err.Error(), "extensions.visibility=official is not supported by the public SDK") {
 		t.Fatalf("CreateTemplate error = %v", err)
-	}
-
-	_, err = service.UpdateTemplate(context.Background(), "tpl-1", &build.TemplateUpdateRequest{
-		Extensions: &build.PublicTemplateExtensions{
-			Seacloud: &build.PublicSeacloudTemplateExtensions{
-				Visibility: "official",
-			},
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "extensions.seacloud.visibility=official is not supported by the public SDK") {
-		t.Fatalf("UpdateTemplate error = %v", err)
 	}
 }
 
@@ -372,7 +390,6 @@ func TestTemplateBuildBuilderRequest(t *testing.T) {
 		User("node", nil).
 		StartCmd("npm start").
 		ReadyCmd("test-ready-command").
-		FilesHash(strings.Repeat("b", 64)).
 		Request()
 
 	if request.FromImage != "docker.io/library/node:20" {
@@ -499,7 +516,7 @@ func TestCreateBuildEncodesSupportedFields(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.FromImage != "docker.io/library/node:20" || req.FilesHash != strings.Repeat("a", 64) {
+		if req.FromImage != "docker.io/library/node:20" {
 			t.Fatalf("request = %#v", req)
 		}
 		if req.FromImageRegistry["type"] != "registry" || req.FromImageRegistry["username"] != "robot" {
@@ -526,7 +543,6 @@ func TestCreateBuildEncodesSupportedFields(t *testing.T) {
 	resp, err := service.CreateBuild(context.Background(), "tpl-1", "build-encoded", &build.BuildRequest{
 		FromImage:         "docker.io/library/node:20",
 		FromImageRegistry: map[string]any{"type": "registry", "username": "robot", "password": "secret"},
-		FilesHash:         strings.Repeat("a", 64),
 		Steps: []build.BuildStep{
 			{Type: "COPY", FilesHash: strings.Repeat("a", 64), Args: []string{"package.json", "/app/package.json"}},
 			{Type: "RUN", Args: []string{"npm install"}},
@@ -577,14 +593,14 @@ func TestBuildValidationErrors(t *testing.T) {
 			want: "buildID must be",
 		},
 		{
-			name: "invalid files hash",
+			name: "invalid copy files hash",
 			fn: func() error {
 				_, err := service.CreateBuild(context.Background(), "tpl-1", "build-test", &build.BuildRequest{
-					FilesHash: "abc",
+					Steps: []build.BuildStep{{Type: "COPY", FilesHash: "abc", Args: []string{"x", "/x"}}},
 				})
 				return err
 			},
-			want: "filesHash must be",
+			want: "steps[0].filesHash must be",
 		},
 		{
 			name: "missing step type",
@@ -948,6 +964,28 @@ func TestDeleteTemplateUsesAuthenticatedTransport(t *testing.T) {
 
 	if err := service.DeleteTemplate(context.Background(), "tpl-1"); err != nil {
 		t.Fatalf("DeleteTemplate: %v", err)
+	}
+}
+
+func TestDeleteTemplateIsIdempotent(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/templates/tpl-gone" {
+					t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+
+			service, err := build.NewService(server.URL, "unit-auth-value")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.DeleteTemplate(context.Background(), "tpl-gone"); err != nil {
+				t.Fatalf("DeleteTemplate(%d): %v", status, err)
+			}
+		})
 	}
 }
 

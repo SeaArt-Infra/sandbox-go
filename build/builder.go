@@ -113,11 +113,6 @@ func (b *TemplateBuildBuilder) ReadyCmd(command string) *TemplateBuildBuilder {
 	return b
 }
 
-func (b *TemplateBuildBuilder) FilesHash(filesHash string) *TemplateBuildBuilder {
-	b.req.FilesHash = filesHash
-	return b
-}
-
 // Request returns a defensive copy that callers can mutate safely.
 func (b *TemplateBuildBuilder) Request() *BuildRequest {
 	req := b.req

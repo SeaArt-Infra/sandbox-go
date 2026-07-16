@@ -53,6 +53,9 @@ func (c *Client) Create(ctx context.Context, templateID string, opts *CreateOpti
 		req.EnvVars = opts.EnvVars
 		req.VolumeMounts = opts.VolumeMounts
 		req.WaitReady = opts.WaitReady
+		req.AutoPause = opts.AutoPause
+		req.WaitTimeout = opts.WaitTimeout
+		req.PollInterval = opts.PollInterval
 	}
 	return c.CreateSandbox(ctx, req)
 }

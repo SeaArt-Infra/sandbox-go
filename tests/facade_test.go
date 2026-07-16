@@ -274,9 +274,8 @@ func TestTemplateFacadeBuildsAndPolls(t *testing.T) {
 			if !ok {
 				t.Fatalf("extensions = %#v", req["extensions"])
 			}
-			seacloud, ok := extensions["seacloud"].(map[string]any)
-			if !ok || seacloud["baseTemplateID"] != "tpl-base-1" {
-				t.Fatalf("extensions.seacloud = %#v", extensions["seacloud"])
+			if extensions["baseTemplateID"] != "tpl-base-1" || extensions["visibility"] != "personal" {
+				t.Fatalf("extensions = %#v", extensions)
 			}
 			_, _ = w.Write([]byte(`{"templateID":"tpl-1","buildID":"server-build-id","public":false,"names":["demo"],"tags":["v1"],"aliases":[]}`))
 		case strings.Contains(r.URL.Path, "/builds/") && r.Method == http.MethodPost:
@@ -367,6 +366,16 @@ func TestTemplateBuildInBackgroundSkipsPolling(t *testing.T) {
 	}
 }
 
+func TestWaitForCommandPreservesCustomReadinessProbe(t *testing.T) {
+	request := sandbox.NewTemplate().
+		FromTemplate("tpl-node").
+		SetStartCmd("npm start", sandbox.WaitForCommand("  node healthcheck.js  ")).
+		Request()
+	if request.StartCmd != "npm start" || request.ReadyCmd != "node healthcheck.js" {
+		t.Fatalf("runtime commands = %#v", request)
+	}
+}
+
 func TestTemplateFacadeBuildForwardsHighLevelOptions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -390,9 +399,8 @@ func TestTemplateFacadeBuildForwardsHighLevelOptions(t *testing.T) {
 			if !ok {
 				t.Fatalf("extensions = %#v", req["extensions"])
 			}
-			seacloud, ok := extensions["seacloud"].(map[string]any)
-			if !ok || seacloud["baseTemplateID"] != "tpl-base-1" {
-				t.Fatalf("extensions.seacloud = %#v", extensions["seacloud"])
+			if extensions["baseTemplateID"] != "tpl-base-1" || extensions["visibility"] != "personal" {
+				t.Fatalf("extensions = %#v", extensions)
 			}
 			_, _ = w.Write([]byte(`{"templateID":"tpl-options","buildID":"server-build-id","public":false,"names":["demo"],"tags":["v1","latest"],"aliases":[]}`))
 		case strings.Contains(r.URL.Path, "/builds/") && r.Method == http.MethodPost:

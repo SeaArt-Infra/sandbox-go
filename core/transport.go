@@ -56,7 +56,7 @@ func NewTransport(baseURL, apiKey string, opts ...TransportOption) (*Transport, 
 		return nil, ErrAPIKeyEmpty
 	}
 
-	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/"))
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +66,8 @@ func NewTransport(baseURL, apiKey string, opts ...TransportOption) (*Transport, 
 
 	transport := &Transport{
 		baseURL:    parsed,
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		apiKey:     strings.TrimSpace(apiKey),
+		httpClient: &http.Client{Timeout: 4 * time.Minute},
 		userAgent:  UserAgent("seainfra-sandbox-go"),
 	}
 	for _, opt := range opts {
@@ -195,7 +195,17 @@ func (c *Transport) resolve(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return c.baseURL.ResolveReference(ref).String(), nil
+	joined, err := url.JoinPath(c.baseURL.String(), strings.TrimPrefix(ref.EscapedPath(), "/"))
+	if err != nil {
+		return "", err
+	}
+	resolved, err := url.Parse(joined)
+	if err != nil {
+		return "", err
+	}
+	resolved.RawQuery = ref.RawQuery
+	resolved.Fragment = ref.Fragment
+	return resolved.String(), nil
 }
 
 func statusAllowed(statusCode int, expected []int) bool {

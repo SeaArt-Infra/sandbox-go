@@ -11,3 +11,5 @@ bin/
 *.out
 coverage.out
 
+# Local production integration test. It uses real credentials and billable resources.
+/tests/live_test.go

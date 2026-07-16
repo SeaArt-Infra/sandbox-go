@@ -17,35 +17,48 @@ type DirectBuildResponse struct {
 	ImageFullName string `json:"imageFullName"`
 }
 
-type PublicSeacloudTemplateExtensions struct {
-	BaseTemplateID string            `json:"baseTemplateID,omitempty"`
-	Visibility     string            `json:"visibility,omitempty"`
-	Envs           map[string]string `json:"envs,omitempty"`
-	StorageType    string            `json:"storageType,omitempty"`
-	StorageSizeGB  *int32            `json:"storageSizeGB,omitempty"`
+// TemplateVolumeMount configures one template-level mount supported by the public Builder API.
+type TemplateVolumeMount struct {
+	Name                  string `json:"name"`
+	Path                  string `json:"path"`
+	StorageType           string `json:"storageType"`
+	HostPath              string `json:"hostPath,omitempty"`
+	NFSHostPath           string `json:"nfsHostPath,omitempty"`
+	StorageClass          string `json:"storageClass,omitempty"`
+	StorageSizeGB         int32  `json:"storageSizeGB,omitempty"`
+	PersistentVolumeClaim string `json:"persistentVolumeClaim,omitempty"`
+	EmptyDirSizeLimit     string `json:"emptyDirSizeLimit,omitempty"`
+	EmptyDirMedium        string `json:"emptyDirMedium,omitempty"`
+	ObjectBucket          string `json:"objectBucket,omitempty"`
+	ObjectKeyPrefix       string `json:"objectKeyPrefix,omitempty"`
+	ReadOnly              bool   `json:"readOnly,omitempty"`
+	SubPath               string `json:"subPath,omitempty"`
 }
 
+// PublicTemplateExtensions matches sandbox-builder's flat public extensions contract.
 type PublicTemplateExtensions struct {
-	Seacloud *PublicSeacloudTemplateExtensions `json:"seacloud,omitempty"`
-}
-
-type SeacloudTemplateExtensions struct {
-	BaseTemplateID string            `json:"baseTemplateID,omitempty"`
-	Visibility     string            `json:"visibility,omitempty"`
-	Envs           map[string]string `json:"envs,omitempty"`
-	StorageType    string            `json:"storageType,omitempty"`
-	StorageSizeGB  *int32            `json:"storageSizeGB,omitempty"`
-	Image          string            `json:"image,omitempty"`
-	ImageSource    string            `json:"imageSource,omitempty"`
-	ProjectID      string            `json:"projectID,omitempty"`
-	TTLSeconds     *int32            `json:"ttlSeconds,omitempty"`
-	Port           *int32            `json:"port,omitempty"`
-	StartCmd       string            `json:"startCmd,omitempty"`
-	ReadyCmd       string            `json:"readyCmd,omitempty"`
+	BaseTemplateID string                `json:"baseTemplateID,omitempty"`
+	Visibility     string                `json:"visibility,omitempty"`
+	Envs           map[string]string     `json:"envs,omitempty"`
+	VolumeMounts   []TemplateVolumeMount `json:"volumeMounts,omitempty"`
+	Workdir        string                `json:"workdir,omitempty"`
 }
 
 type TemplateExtensions struct {
-	Seacloud *SeacloudTemplateExtensions `json:"seacloud,omitempty"`
+	BaseTemplateID string                `json:"baseTemplateID,omitempty"`
+	Visibility     string                `json:"visibility,omitempty"`
+	Envs           map[string]string     `json:"envs,omitempty"`
+	VolumeMounts   []TemplateVolumeMount `json:"volumeMounts,omitempty"`
+	Workdir        string                `json:"workdir,omitempty"`
+	StorageType    string                `json:"storageType,omitempty"`
+	StorageSizeGB  *int32                `json:"storageSizeGB,omitempty"`
+	Image          string                `json:"image,omitempty"`
+	ImageSource    string                `json:"imageSource,omitempty"`
+	ProjectID      string                `json:"projectID,omitempty"`
+	TTLSeconds     *int32                `json:"ttlSeconds,omitempty"`
+	Port           *int32                `json:"port,omitempty"`
+	StartCmd       string                `json:"startCmd,omitempty"`
+	ReadyCmd       string                `json:"readyCmd,omitempty"`
 }
 
 // TemplateCreateRequest is the request body for POST /api/v1/templates.
@@ -59,7 +72,7 @@ type TemplateCreateRequest struct {
 
 // TemplateUpdateRequest is the request body for PATCH /api/v1/templates/:id.
 type TemplateUpdateRequest struct {
-	Extensions *PublicTemplateExtensions `json:"extensions,omitempty"`
+	Public *bool `json:"public,omitempty"`
 }
 
 // TemplateCreateResponse is the minimal create response.
@@ -230,7 +243,6 @@ type BuildRequest struct {
 	FromImageRegistry map[string]any `json:"fromImageRegistry,omitempty"`
 	Force             *bool          `json:"force,omitempty"`
 	Steps             []BuildStep    `json:"steps,omitempty"`
-	FilesHash         string         `json:"filesHash,omitempty"`
 	StartCmd          string         `json:"startCmd,omitempty"`
 	ReadyCmd          string         `json:"readyCmd,omitempty"`
 }
