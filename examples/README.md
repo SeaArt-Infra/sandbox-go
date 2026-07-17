@@ -18,7 +18,7 @@ Recommended reading order:
 2. `template_features`: `FromDockerfile` -> local `Copy(..., Mode/ResolveSymlinks)` -> `client.BuildTemplateInBackground(...)` -> `client.GetTemplateBuildStatus(...)` -> existence/detail
 3. `control_sandbox`: `sandbox.NewClient(...)` -> `client.Create(...)` -> reload -> cleanup
 4. `cmd_smoke`: `sandbox.NewClient(...)` -> `client.Create(...)` -> `Files()` / `Commands()`
-5. `build_template`: minimal `sandbox.NewTemplate()` plus `client.BuildTemplate(...)`
+5. `build_template`: resolve Node base -> upload local directory -> build -> create sandbox -> verify COPY -> cleanup
 
 ## Full Workflow
 
@@ -70,14 +70,19 @@ go run ./examples/control_sandbox
 
 ## Build Plane
 
-Recommended path: the example uses `sandbox.NewTemplate()` plus `client.BuildTemplate(...)`.
-The flow shows the current client-first template workflow directly: template DSL -> build polling -> template detail -> cleanup.
+Recommended path: the example resolves the managed Node template, adds the local
+`examples/build_template/context` directory with `Template.Copy`, builds a personal
+template, starts a sandbox from it, and reads the copied marker through the runtime
+command API. The sandbox and template are deleted in that order after verification.
 
 Required env: none
 
 Optional env:
 
-- `SANDBOX_EXAMPLE_BUILD_IMAGE`
+- `SANDBOX_EXAMPLE_BASE_TEMPLATE` (default: `node`)
+- `SANDBOX_EXAMPLE_BUILD_CONTEXT` (default: `examples/build_template/context`;
+  custom contexts must contain `sandbox-go-build-context.txt` with
+  `sandbox-go-copy-ok`)
 - `SANDBOX_EXAMPLE_KEEP_RESOURCES=1`
 
 ```bash

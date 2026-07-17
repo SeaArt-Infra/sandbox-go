@@ -142,17 +142,26 @@ for _, sandbox := range listed {
 ### Template Build
 
 ```go
-template := sandbox.NewTemplate().
-	FromImage("docker.io/library/alpine:3.20").
-	RunCmd("echo hello-from-go >/tmp/hello.txt", nil).
-	SetReadyCmd(sandbox.WaitForFile("/tmp/hello.txt"))
-
 client, err := sandbox.NewClient(os.Getenv("SEAINFRA_BASE_URL"), os.Getenv("SEAINFRA_API_KEY"))
 if err != nil {
 	log.Fatal(err)
 }
 
-built, err := client.BuildTemplate(context.Background(), template, "demo:v1", nil)
+ctx := context.Background()
+base, err := client.Build.ResolveTemplateRef(ctx, "node")
+if err != nil {
+	log.Fatal(err)
+}
+
+template := sandbox.NewTemplate().
+	FromTemplate(base.TemplateID).
+	SetWorkdir("/app").
+	Copy("./app", "/app", nil)
+
+built, err := client.BuildTemplate(ctx, template, "demo:v1", &sandbox.TemplateBuildOptions{
+	BaseTemplateID: base.TemplateID,
+	Workdir:        "/app",
+})
 if err != nil {
 	log.Fatal(err)
 }
