@@ -34,6 +34,12 @@ type ConnectSandboxResponse struct {
 	Sandbox    *Sandbox
 }
 
+const (
+	connectRecoveryTimeout         = 10 * time.Minute
+	connectRecoveryInitialInterval = 250 * time.Millisecond
+	connectRecoveryMaxInterval     = 2 * time.Second
+)
+
 func (c *Client) CreateSandbox(ctx context.Context, req *control.NewSandboxRequest) (*Sandbox, error) {
 	if req == nil {
 		return nil, core.ErrTemplateEmpty
@@ -88,7 +94,21 @@ func (c *Client) CreateSandbox(ctx context.Context, req *control.NewSandboxReque
 }
 
 func sandboxControlReady(status, state string) bool {
-	switch strings.ToLower(strings.TrimSpace(firstNonEmpty(state, status))) {
+	status = normalizeSandboxControlState(status)
+	state = normalizeSandboxControlState(state)
+	if status != "" {
+		return sandboxControlReadyValue(status) && (state == "" || sandboxControlReadyValue(state))
+	}
+	return sandboxControlReadyValue(state)
+}
+
+func sandboxControlTerminalFailure(status, state string) bool {
+	return sandboxControlTerminalValue(normalizeSandboxControlState(status)) ||
+		sandboxControlTerminalValue(normalizeSandboxControlState(state))
+}
+
+func sandboxControlReadyValue(value string) bool {
+	switch value {
 	case "active", "running", "ready":
 		return true
 	default:
@@ -96,13 +116,17 @@ func sandboxControlReady(status, state string) bool {
 	}
 }
 
-func sandboxControlTerminalFailure(status, state string) bool {
-	switch strings.ToLower(strings.TrimSpace(firstNonEmpty(state, status))) {
+func sandboxControlTerminalValue(value string) bool {
+	switch value {
 	case "deleted", "destroying", "failed", "error", "expired":
 		return true
 	default:
 		return false
 	}
+}
+
+func normalizeSandboxControlState(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func updateCreatedSandbox(created *control.Sandbox, detail *control.SandboxDetail) {
@@ -153,13 +177,114 @@ func (c *Client) ConnectSandbox(
 	req *control.ConnectSandboxRequest,
 ) (*ConnectSandboxResponse, error) {
 	resp, err := c.Service.ConnectSandbox(ctx, sandboxID, req)
-	if err != nil {
+	if err == nil {
+		return bindConnectSandboxResponse(c, resp), nil
+	}
+	if !sandboxConnectResultAmbiguous(err) {
 		return nil, err
+	}
+	return c.recoverConnectSandbox(ctx, sandboxID, req, err)
+}
+
+func sandboxConnectResultAmbiguous(err error) bool {
+	var apiErr *core.APIError
+	return errors.As(err, &apiErr) && apiErr.Kind == core.APIErrorKindServer
+}
+
+func bindConnectSandboxResponse(c *Client, resp *control.ConnectSandboxResponse) *ConnectSandboxResponse {
+	if resp == nil {
+		return nil
 	}
 	return &ConnectSandboxResponse{
 		StatusCode: resp.StatusCode,
 		Sandbox:    bindSandbox(c, resp.Sandbox),
-	}, nil
+	}
+}
+
+func (c *Client) recoverConnectSandbox(
+	ctx context.Context,
+	sandboxID string,
+	req *control.ConnectSandboxRequest,
+	initialErr error,
+) (*ConnectSandboxResponse, error) {
+	recoveryCtx, cancel := context.WithTimeout(ctx, connectRecoveryTimeout)
+	defer cancel()
+	pollInterval := connectRecoveryInitialInterval
+	pausedRetryAttempted := false
+	lastConnectErr := initialErr
+
+	for {
+		detail, err := c.Service.GetSandbox(recoveryCtx, sandboxID)
+		if err == nil && detail != nil {
+			if sandboxControlTerminalFailure(detail.Status, detail.State) {
+				return nil, &ResourceOperationError{
+					Operation: "recover sandbox connection", ResourceType: "sandbox", ResourceID: sandboxID,
+					Err: fmt.Errorf("sandbox entered terminal state %q after connect error: %w", firstNonEmpty(detail.Status, detail.State), initialErr),
+				}
+			}
+			if sandboxControlReady(detail.Status, detail.State) {
+				resp, retryErr := c.Service.ConnectSandbox(recoveryCtx, sandboxID, req)
+				if retryErr != nil {
+					return nil, &ResourceOperationError{
+						Operation: "retry sandbox connection", ResourceType: "sandbox", ResourceID: sandboxID, Err: retryErr,
+					}
+				}
+				return bindConnectSandboxResponse(c, resp), nil
+			}
+			if sandboxControlPaused(detail.Status, detail.State) {
+				if pausedRetryAttempted {
+					return nil, &ResourceOperationError{
+						Operation: "recover sandbox connection", ResourceType: "sandbox", ResourceID: sandboxID, Err: lastConnectErr,
+					}
+				}
+				pausedRetryAttempted = true
+				resp, retryErr := c.Service.ConnectSandbox(recoveryCtx, sandboxID, req)
+				if retryErr == nil {
+					return bindConnectSandboxResponse(c, resp), nil
+				}
+				var apiErr *core.APIError
+				if !errors.As(retryErr, &apiErr) || (apiErr.Kind != core.APIErrorKindConflict && apiErr.Kind != core.APIErrorKindServer) {
+					return nil, &ResourceOperationError{
+						Operation: "retry paused sandbox connection", ResourceType: "sandbox", ResourceID: sandboxID, Err: retryErr,
+					}
+				}
+				lastConnectErr = retryErr
+			}
+		} else if err != nil {
+			var apiErr *core.APIError
+			if !errors.As(err, &apiErr) || (apiErr.Kind != core.APIErrorKindConflict && !apiErr.Retryable()) {
+				return nil, &ResourceOperationError{
+					Operation: "recover sandbox connection", ResourceType: "sandbox", ResourceID: sandboxID, Err: err,
+				}
+			}
+		}
+
+		if err := waitForPoll(recoveryCtx, pollInterval); err != nil {
+			return nil, &ResourceOperationError{
+				Operation: "recover sandbox connection", ResourceType: "sandbox", ResourceID: sandboxID,
+				Err: fmt.Errorf("%w (initial connect error: %v)", err, initialErr),
+			}
+		}
+		if pollInterval < connectRecoveryMaxInterval {
+			pollInterval *= 2
+			if pollInterval > connectRecoveryMaxInterval {
+				pollInterval = connectRecoveryMaxInterval
+			}
+		}
+	}
+}
+
+func sandboxControlPaused(status, state string) bool {
+	status = normalizeSandboxControlState(status)
+	state = normalizeSandboxControlState(state)
+	if status != "" {
+		return sandboxControlPausedValue(status) && (state == "" || sandboxControlPausedValue(state))
+	}
+	return sandboxControlPausedValue(state)
+}
+
+func sandboxControlPausedValue(value string) bool {
+	return value == "paused" || value == "stopped"
 }
 
 func (s *Sandbox) Runtime() (*Runtime, error) {
@@ -406,10 +531,5 @@ func bindSandboxHandle(client *Client, sandbox *control.ListedSandbox) *SandboxH
 }
 
 func isRunningSandboxState(state, status string) bool {
-	switch strings.ToLower(strings.TrimSpace(firstNonEmpty(state, status))) {
-	case "paused", "stopped", "deleted":
-		return false
-	default:
-		return true
-	}
+	return sandboxControlReady(status, state)
 }
