@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+const idempotentRequestMaxAttempts = 4
 
 // Transport is the shared HTTP entry point for the SDK.
 type Transport struct {
@@ -180,6 +184,47 @@ func (c *Transport) DoRequest(
 
 	defer resp.Body.Close()
 	return nil, DecodeAPIError(resp)
+}
+
+// DoIdempotentRequest retries transient failures for operations that are safe
+// to repeat, such as DELETE. Callers must not use it for non-idempotent APIs.
+func (c *Transport) DoIdempotentRequest(
+	ctx context.Context,
+	method, path string,
+	headers http.Header,
+	query url.Values,
+	body any,
+	expectedStatus ...int,
+) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < idempotentRequestMaxAttempts; attempt++ {
+		resp, err := c.DoRequest(ctx, method, path, headers, query, body, expectedStatus...)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !isTransientRequestError(err) || attempt == idempotentRequestMaxAttempts-1 {
+			return nil, err
+		}
+		delay := 250 * time.Millisecond * time.Duration(1<<attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func isTransientRequestError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Retryable()
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr)
 }
 
 func (c *Transport) resolve(path string) (string, error) {

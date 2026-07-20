@@ -989,6 +989,30 @@ func TestDeleteTemplateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeleteTemplateRetriesTransientGatewayErrors(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	service, err := build.NewService(server.URL, "unit-auth-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteTemplate(context.Background(), "tpl-1"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
+	}
+}
+
 func TestBuildAPIErrorDecoding(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -406,6 +406,50 @@ func TestDeleteSandboxIsIdempotentForDeletedResources(t *testing.T) {
 	}
 }
 
+func TestDeleteSandboxRetriesTransientGatewayErrors(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	service, err := control.NewService(server.URL, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteSandbox(context.Background(), "sandbox-1"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
+	}
+}
+
+func TestDeleteSandboxDoesNotRetryPermissionErrors(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	service, err := control.NewService(server.URL, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteSandbox(context.Background(), "sandbox-1"); err == nil {
+		t.Fatal("DeleteSandbox() succeeded on a permission error")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
 func TestAPIErrorKindClassification(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -151,7 +151,7 @@ func (c *Service) DeleteTemplate(ctx context.Context, templateID string) error {
 	}
 
 	path := "/api/v1/templates/" + url.PathEscape(templateID)
-	resp, err := c.DoRequest(
+	resp, err := c.DoIdempotentRequest(
 		ctx,
 		http.MethodDelete,
 		path,

@@ -95,7 +95,7 @@ func (c *Service) DeleteSandbox(ctx context.Context, sandboxID string) error {
 	}
 
 	path := "/api/v1/sandboxes/" + url.PathEscape(sandboxID)
-	resp, err := c.DoRequest(
+	resp, err := c.DoIdempotentRequest(
 		ctx,
 		http.MethodDelete,
 		path,
