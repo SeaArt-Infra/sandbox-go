@@ -19,6 +19,7 @@ Recommended reading order:
 3. `control_sandbox`: `sandbox.NewClient(...)` -> `client.Create(...)` -> reload -> cleanup
 4. `cmd_smoke`: `sandbox.NewClient(...)` -> `client.Create(...)` -> `Files()` / `Commands()`
 5. `build_template`: resolve Node base -> upload local directory -> build -> create sandbox -> verify COPY -> cleanup
+6. `build_nfs_web_template`: derive from the managed NFS base -> upload a local Web app -> initialize the NFS workspace -> run Web and executor services together -> verify pause/resume persistence
 
 ## Full Workflow
 
@@ -87,6 +88,42 @@ Optional env:
 
 ```bash
 go run ./examples/build_template
+```
+
+## NFS Web Template
+
+This example builds the default-start Web template used with the managed NFS
+runtime. It resolves the official `nfs` template, uploads a local npm/Vite app,
+installs Node.js in the derived image, and builds the app. At Sandbox startup it:
+
+- overrides the inherited workspace mount with an operator-provided NFS host path
+- copies `/app` into `/agent-workspace` only when the NFS workspace is empty
+- sets the runtime workdir to the NFS mount so executor file APIs use the persistent root
+- starts the Web app on port `3000`
+- leaves the managed nano-executor running on port `9000`
+- verifies the Web proxy and executor APIs
+- writes an NFS marker, pauses and resumes the same Sandbox, and verifies that the marker remains
+- deletes the Sandbox and derived template after verification
+
+The local source must contain `package.json`, `package-lock.json`, `index.html`,
+and `src`, with `build` and `dev` npm scripts. The example explicitly uploads
+the standard source/config files instead of copying the entire local directory,
+so local `.env`, `.git`, `node_modules`, and generated output are not included.
+
+Required env:
+
+- `SANDBOX_EXAMPLE_WEB_SOURCE_DIR`
+- `SANDBOX_EXAMPLE_NFS_HOST_PATH` (the NFS root assigned by the platform operator)
+
+Optional env:
+
+- `SANDBOX_EXAMPLE_NFS_BASE_TEMPLATE` (default: `nfs`)
+- `SANDBOX_EXAMPLE_NFS_WORKSPACE_DIR` (default: `/agent-workspace`)
+- `SANDBOX_EXAMPLE_TEMPLATE_NAME` (default: generated unique name)
+- `SANDBOX_EXAMPLE_KEEP_RESOURCES=1`
+
+```bash
+go run ./examples/build_nfs_web_template
 ```
 
 ## Template Features
